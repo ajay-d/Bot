@@ -49,20 +49,17 @@ class Agent:
         # get size of state and action
         self.state_size = state_size
         self.action_size = action_size
-        self.value_size = 1
 
-        # These are hyper parameters for the Policy Gradient
-        self.discount_factor = 0.99
-        self.actor_lr = 0.001
-        self.critic_lr = 0.005
+        self.gamma = 0.95
+        self.epsilon = 1.0
+        self.epsilon_min = 0.01
+        self.epsilon_decay = 0.995
 
-        # create model for policy network
-        self.actor = self.build_actor()
-        self.critic = self.build_critic()
-
-        if self.load_model:
-            self.actor.load_weights("model/actor.h5")
-            self.critic.load_weights("model/critic.h5")
+    def get_action(self, state):
+        if self.epsilon > self.epsilon_min:
+            self.epsilon *= self.epsilon_decay
+        if np.random.rand() <= self.epsilon:
+            return 0
 
 turn = 0
 while True:
@@ -98,6 +95,7 @@ while True:
 
     logging.info(df)
     #logging.info(ship_constant)
+    my_agent = Agent(10, 2)
 
     # Here we define the set of commands to be sent to the Halite engine at the end of the turn
     command_queue = []
