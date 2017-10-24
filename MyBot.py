@@ -16,6 +16,8 @@ import hlt
 import logging
 import pandas as pd
 import numpy as np
+from sklearn import preprocessing
+from collections import deque
 
 # GAME START
 # Here we define the bot's name as Settler and initialize the game, including communication with the Halite engine.
@@ -62,6 +64,7 @@ class Agent:
             return 0
 
 turn = 0
+value = deque(maxlen=2000)
 while True:
     # TURN START
     # Update the map for the new turn and get the latest version
@@ -75,12 +78,17 @@ while True:
     N_planets = len(game_map.all_planets())
     logging.info('N planets: {}'.format(N_planets))
 
+    N_enemey_ships = 0
     for p in game_map.all_players():
         logging.info('Player: {} Ships: {}'.format(p.id, len(p.all_ships())))
+        if p.id != game_map.my_id:
+            N_enemey_ships += len(p.all_ships())
+
 
     #Initial our state matrix
     if turn == 0:
-        ship_constant = N_ships*100
+        value.append(N_ships / (N_ships + N_enemey_ships) * 100)
+        reward = 0
         df = pd.DataFrame(np.zeros((N_planets, 14)),
             columns=['planet', 'radius', 'spots', 'health', 'current_production', 'remaining_production', 
                      'ownership', 'distance', 'nearest_friend', 'nearest_enemy', 'n_docked_ships', 'n_my_ships', 'n_enemy_ships', 'is_full'])
@@ -92,9 +100,12 @@ while True:
             df.health.iloc[planet.id] = planet.health
             df.current_production.iloc[planet.id] = planet.current_production
             df.remaining_production.iloc[planet.id] = planet.remaining_resources
+    else:
+        cur_value = N_ships / (N_ships + N_enemey_ships) * 100
+        reward = cur_value - value[turn-1]
+        value.append(cur_value)
 
-    logging.info(df)
-    #logging.info(ship_constant)
+    logging.info(reward)
 
     # Here we define the set of commands to be sent to the Halite engine at the end of the turn
     command_queue = []
@@ -158,8 +169,10 @@ while True:
         df.n_my_ships = my_ships_array
         df.n_enemy_ships = enemy_ships_array
         df.is_full = full_array
-        logging.info(df)
+        #logging.info(df)
         
+        train_data = preprocessing.scale(df.drop('planet', axis=1))
+
         # If the ship is docked
         if ship.docking_status != ship.DockingStatus.UNDOCKED:
             # Skip this ship
