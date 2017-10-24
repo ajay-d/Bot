@@ -81,9 +81,9 @@ while True:
     #Initial our state matrix
     if turn == 0:
         ship_constant = N_ships*100
-        df = pd.DataFrame(np.zeros((N_planets, 10)),
-            columns=['planet', 'radius', 'spots', 'health', 'current_production', 'remaining_production', 'ownership',
-                     'n_docked_ships', 'n_my_ships', 'is_full'])
+        df = pd.DataFrame(np.zeros((N_planets, 14)),
+            columns=['planet', 'radius', 'spots', 'health', 'current_production', 'remaining_production', 
+                     'ownership', 'distance', 'nearest_friend', 'nearest_enemy', 'n_docked_ships', 'n_my_ships', 'n_enemy_ships', 'is_full'])
         df['planet'] = np.arange(0, N_planets, 1)
         for planet in game_map.all_planets():
             #logging.info(df.loc[planet.id]['radius'])
@@ -95,12 +95,71 @@ while True:
 
     logging.info(df)
     #logging.info(ship_constant)
-    my_agent = Agent(10, 2)
 
     # Here we define the set of commands to be sent to the Halite engine at the end of the turn
     command_queue = []
     # For every ship that I control
     for ship in game_map.get_me().all_ships():
+
+        dist_array = np.zeros(N_planets)
+        own_array = np.zeros(N_planets)
+        dock_array = np.zeros(N_planets)
+        my_ships_array = np.zeros(N_planets)
+        enemy_ships_array = np.zeros(N_planets)
+        my_dist_array = np.zeros(N_planets)
+        enemy_dist_array = np.zeros(N_planets)
+        full_array = np.zeros(N_planets)
+        #Calculate matrix of values for every ship
+        for planet in game_map.all_planets():
+            if planet.owner == game_map.get_me():
+                ownership = 1
+            elif planet.owner is None:
+                ownership = 0
+            else:  # owned by enemy
+                ownership = -1
+            d = ship.calculate_distance_between(planet)
+            own_array[planet.id] = ownership
+            dock = len(planet.all_docked_ships())
+            dist_array[planet.id] = d
+            dock_array[planet.id] = dock
+            #df.ownership.iloc[planet.id] = d
+            n_my = 0
+            n_enemy = 0
+            for s in planet.all_docked_ships():
+                if s.owner == game_map.get_me():
+                    n_my += 1
+                else:
+                    n_enemy += 1
+            my_ships_array[planet.id] = n_my
+            enemy_ships_array[planet.id] = n_enemy
+            enemy_best_distance = 10000
+            my_best_distance = 10000
+            for p in game_map.all_players():
+                if p.id != game_map.my_id:
+                    for s in p.all_ships():
+                        d = s.calculate_distance_between(planet)
+                        enemy_best_distance = min(d, enemy_best_distance)
+                else:
+                    for s in p.all_ships():
+                        d = s.calculate_distance_between(planet)
+                        my_best_distance = min(d, my_best_distance)
+            my_dist_array[planet.id] = my_best_distance
+            enemy_dist_array[planet.id] = enemy_best_distance
+            if planet.is_full():
+                full_array[planet.id] = 1
+            else:
+                full_array[planet.id] = 0
+        
+        df.ownership = own_array
+        df.distance = dist_array
+        df.nearest_friend = my_dist_array
+        df.nearest_enemy = enemy_dist_array
+        df.n_docked_ships = dock_array
+        df.n_my_ships = my_ships_array
+        df.n_enemy_ships = enemy_ships_array
+        df.is_full = full_array
+        logging.info(df)
+        
         # If the ship is docked
         if ship.docking_status != ship.DockingStatus.UNDOCKED:
             # Skip this ship
