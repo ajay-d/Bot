@@ -65,9 +65,9 @@ class Agent:
 
 # GAME START
 # Here we define the bot's name as Settler and initialize the game, including communication with the Halite engine.
-game = hlt.Game("Settler")
+game = hlt.Game("Agent")
 # Then we print our start message to the logs
-logging.info("Starting my Settler bot!")
+logging.info("Starting my Agent bot!")
 
 FEATURE_NAMES = [
     "health",
@@ -89,7 +89,8 @@ def distance(x1, y1, x2, y2):
     return math.sqrt(distance2(x1, y1, x2, y2))
 
 turn = 0
-value = deque(maxlen=2000)
+pct_owned = deque(maxlen=2000)
+ship_states = deque(maxlen=2000)
 while True:
     # TURN START
     # Update the map for the new turn and get the latest version
@@ -103,17 +104,15 @@ while True:
     N_planets = len(game_map.all_planets())
     logging.info('N planets: {}'.format(N_planets))
 
-    N_enemey_ships = 0
+    N_enemy_ships = 0
     for p in game_map.all_players():
         logging.info('Player: {} Ships: {}'.format(p.id, len(p.all_ships())))
         if p.id != game_map.my_id:
-            N_enemey_ships += len(p.all_ships())
+            N_enemy_ships += len(p.all_ships())
 
 
     #Initial our state matrix
     if turn == 0:
-        value.append(N_ships / (N_ships + N_enemey_ships) * 100)
-        reward = 0
         df = pd.DataFrame(np.zeros((N_planets, 14)),
             columns=['planet', 'radius', 'spots', 
                      'health', 'current_production', 'remaining_production', 'ownership', 'n_docked_ships', 'n_my_ships', 'n_enemy_ships', 'is_full', 
@@ -128,12 +127,10 @@ while True:
         df.radius = radius_array
         df.spots = spots_array
 
-    else:
-        cur_value = N_ships / (N_ships + N_enemey_ships) * 100
-        reward = cur_value - value[turn-1]
-        value.append(cur_value)
 
-    logging.info(reward)
+    pct_owned.append(N_ships / (N_ships + N_enemy_ships) * 100)
+    logging.info('Pct Ships Owned')
+    logging.info(pct_owned[turn])
 
     # Here we define the set of commands to be sent to the Halite engine at the end of the turn
     command_queue = []
@@ -184,6 +181,8 @@ while True:
     df.n_enemy_ships = enemy_ships_array
     df.is_full = full_array
 
+    #Dict to hold ship states
+    ship_dict = {}
     # For every ship that I control
     for ship in game_map.get_me().all_ships():
 
@@ -192,8 +191,6 @@ while True:
         my_dist_array = np.zeros(N_planets)
         enemy_dist_array = np.zeros(N_planets)
         for planet in game_map.all_planets():
-            logging.info('planet')
-            logging.info(planet)
             d = ship.calculate_distance_between(planet)
             dist_array[planet.id] = d
 
@@ -221,13 +218,40 @@ while True:
         #logging.info(df)
 
         logging.info(td.size)
-        #training dim is 1xtotal features / state size
-        #plus one more for closest ship
+        
+        #training dim is 1 x total features / state size
+        #plus a few more ship specific:
+         #closest friendly ship
+         #closest enemy ship
+         #current health
+        
         #output is soft_max length N_planets
+        #Maybe add fly to nearest friendly / enemy ship
+        #crash into options?
         if turn == 0:
             MyAgent = Agent(td.size, N_planets)
-            policy = MyAgent.get_action(td)
-            
+            prior_state, prior_reward = td, 0
+        else:
+            if ship.id in ship_states[turn-1]:
+                prior_state, prior_reward = ship_states[turn-1].get(ship.id)
+            else:
+                #Then it's a brand new ship
+                prior_state, prior_reward = td, 100
+        
+        policy = MyAgent.get_action(td)
+
+        #reward = N my ships + current ship health / 255 + Pct my ships - 50
+        #maybe delta?
+        reward = N_ships + ship.health/255 + pct_owned[turn] - 50
+        #state, health, reward
+        ship_dict[ship.id] = (td, reward)
+
+        logging.info('Reward')
+        logging.info(reward)
+
+
+        #agent.train_model(state, action, reward, next_state, done)
+
 
         # If the ship is docked
         if ship.docking_status != ship.DockingStatus.UNDOCKED:
@@ -263,6 +287,9 @@ while True:
             break
     turn += 1
     logging.info(turn)
+
+    #Store ships, actions and values in dict
+    ship_states.append(ship_dict)
     # Send our set of commands to the Halite engine for this turn
     game.send_command_queue(command_queue)
     # TURN END
