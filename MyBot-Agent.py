@@ -10,7 +10,8 @@ This bot's name is Settler. It's purpose is simple (don't expect it to win compl
 Note: Please do not place print statements here as they are used to communicate with the Halite engine. If you need
 to log anything use the logging module.
 """
-
+import os
+os.environ["KERAS_BACKEND"] = "tensorflow"
 from keras.optimizers import Adam
 from keras.models import Sequential
 from keras.layers import Dense, Dropout, Activation
@@ -50,7 +51,7 @@ class Agent:
     def build_actor(self):
         actor = Sequential()
         actor.add(Dense(50, input_dim=self.state_size, batch_size=1, activation='relu', kernel_initializer='he_uniform'))
-        actor.add(Dense(50, input_dim=self.state_size, activation='relu', kernel_initializer='he_uniform'))
+        actor.add(Dense(50, activation='relu', kernel_initializer='he_uniform'))
         actor.add(Dense(self.action_size, activation='softmax', kernel_initializer='he_uniform'))
         actor.compile(loss='categorical_crossentropy', optimizer='adam')
         return actor
@@ -58,10 +59,23 @@ class Agent:
     def build_critic(self):
         critic = Sequential()
         critic.add(Dense(50, input_dim=self.state_size, batch_size=1, activation='relu', kernel_initializer='he_uniform'))
-        critic.add(Dense(50, input_dim=self.state_size, activation='relu', kernel_initializer='he_uniform'))
+        critic.add(Dense(50, activation='relu', kernel_initializer='he_uniform'))
         critic.add(Dense(1, activation='linear', kernel_initializer='he_uniform'))
         critic.compile(loss='mse', optimizer='adam')
         return critic
+
+    def train_model(self, prior_state, state, action, reward):
+        target = np.array([reward])
+        advantages = np.zeros((1, self.action_size))
+
+        value = self.critic.predict(prior_state, batch_size=1)[0]
+        next_value = self.critic.predict(state, batch_size=1)[0]
+
+        advantages[0][action] = reward + self.gamma * (next_value) - value
+        target[0] = reward + self.gamma * next_value
+
+        self.actor.fit(state, advantages, batch_size=1, epochs=1, verbose=0)
+        #self.critic.fit(state, target, batch_size=1, epochs=1, verbose=0)
 
 # GAME START
 # Here we define the bot's name as Settler and initialize the game, including communication with the Halite engine.
@@ -114,11 +128,11 @@ while True:
     #Initial our state matrix
     if turn == 0:
         df = pd.DataFrame(np.zeros((N_planets, 14)),
-            columns=['planet', 'radius', 'spots', 
-                     'health', 'current_production', 'remaining_production', 'ownership', 'n_docked_ships', 'n_my_ships', 'n_enemy_ships', 'is_full', 
+            columns=['planet', 'radius', 'spots',
+                     'health', 'current_production', 'remaining_production', 'ownership', 'n_docked_ships', 'n_my_ships', 'n_enemy_ships', 'is_full',
                      'distance', 'nearest_friend', 'nearest_enemy'])
         df['planet'] = np.arange(0, N_planets, 1)
-        
+
         radius_array = np.zeros(N_planets)
         spots_array = np.zeros(N_planets)
         for planet in game_map.all_planets():
@@ -157,7 +171,7 @@ while True:
         rem_prod_array[planet.id] = planet.remaining_resources
         dock = len(planet.all_docked_ships())
         dock_array[planet.id] = dock
-        
+
         n_my = 0
         n_enemy = 0
         for s in planet.all_docked_ships():
@@ -207,51 +221,50 @@ while True:
                         my_best_distance = min(d, my_best_distance)
             my_dist_array[planet.id] = my_best_distance
             enemy_dist_array[planet.id] = enemy_best_distance
-            
-        
+
+
         df.distance = dist_array
         df.nearest_friend = my_dist_array
         df.nearest_enemy = enemy_dist_array
-        
+
         train_data = preprocessing.scale(df.drop('planet', axis=1))
         td = train_data.reshape((1,train_data.size))
         #logging.info(df)
 
         logging.info(td.size)
-        
+
         #training dim is 1 x total features / state size
         #plus a few more ship specific:
          #closest friendly ship
          #closest enemy ship
          #current health
-        
+
         #output is soft_max length N_planets
         #Maybe add fly to nearest friendly / enemy ship
         #crash into options?
         if turn == 0:
             MyAgent = Agent(td.size, N_planets)
-            prior_state, prior_reward = td, 0
+            prior_state, prior_points = td, 0
         else:
             if ship.id in ship_states[turn-1]:
-                prior_state, prior_reward = ship_states[turn-1].get(ship.id)
+                prior_state, prior_points = ship_states[turn-1].get(ship.id)
             else:
                 #Then it's a brand new ship
-                prior_state, prior_reward = td, 100
-        
+                prior_state, prior_points = td, 0
+
         policy = MyAgent.get_action(td)
 
-        #reward = N my ships + current ship health / 255 + Pct my ships - 50
+        #points = N my ships + current ship health / 255 + Pct my ships - 50
         #maybe delta?
-        reward = N_ships + ship.health/255 + pct_owned[turn] - 50
-        #state, health, reward
-        ship_dict[ship.id] = (td, reward)
+        points = N_ships + ship.health/255 + pct_owned[turn] - 50
+        #state, health, points
+        ship_dict[ship.id] = (td, points)
+        reward = points-prior_points
 
-        logging.info('Reward')
-        logging.info(reward)
+        logging.info('Points: {}'.format(points))
+        logging.info('Reward: {}'.format(reward))
 
-
-        #agent.train_model(state, action, reward, next_state, done)
-
+        MyAgent.train_model(prior_state, td, policy, reward)
 
         # If the ship is docked
         if ship.docking_status != ship.DockingStatus.UNDOCKED:
@@ -294,4 +307,3 @@ while True:
     game.send_command_queue(command_queue)
     # TURN END
 # GAME END
-
