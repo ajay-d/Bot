@@ -265,14 +265,28 @@ while True:
         ship_player_array = []
         ship_dist_array = []
         ship_status_array = []
+
+        ship_min_friendly_d = deque(np.zeros(SHIPS), maxlen = SHIPS)
+        ship_min_enemy_d = deque(np.zeros(SHIPS), maxlen = SHIPS)
+        ship_min_friendly_id = deque(np.zeros(SHIPS), maxlen = SHIPS)
+        ship_min_enemy_id = deque(np.zeros(SHIPS), maxlen = SHIPS)
+
         for s in all_ships:
             #ship_id_array = np.append(ship_id_array, s.id)
             ship_id_array.append(s.id)
             ship_x_array.append(s.x)
             ship_y_array.append(s.y)
             ship_player_array.append(s.owner.id)
-            ship_dist_array.append(ship.calculate_distance_between(s))
             ship_status_array.append(s.docking_status)
+            
+            dist = ship.calculate_distance_between(s)
+            ship_dist_array.append(dist)
+            if (s.owner.id == game_map.my_id) & (dist < min(ship_min_friendly_d)) & (ship.id != s.id):
+                ship_min_friendly_d.append(dist)
+                ship_min_friendly_id.append(s.id)
+
+        logging.info(ship_min_friendly_d)
+        logging.info(ship_min_friendly_id)
 
         df_ships.ship_id = ship_id_array
         df_ships.x = ship_x_array
@@ -281,14 +295,14 @@ while True:
         df_ships.distance = ship_dist_array
         df_ships.status = ship_status_array
 
-        logging.info(all_ships)
-        logging.info(df_ships)
+        #logging.info(all_ships)
+        #logging.info(df_ships)
 
         #df_ships_friend = df_ships[(df_ships.ship_id != ship.id) & (df_ships.player == game_map.my_id)]
         #df_ships_friend.sort_values('distance', inplace=True)
         #df_ships_enemy = df_ships[(df_ships.ship_id != ship.id) & (df_ships.player != game_map.my_id)]
         #df_ships_enemy.sort_values('distance', inplace=True)
-        #logging.info(df_ships_enemy)
+        #logging.info(df_ships_enemy.head(5))
         
         #df.sort("diff").groupby("item", as_index=False).first()
         #df.groupby('group_id')['A'].transform('min')
