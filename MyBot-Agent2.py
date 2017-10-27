@@ -22,6 +22,7 @@ import hlt
 import logging
 import pandas as pd
 import numpy as np
+import math
 
 from sklearn import preprocessing
 from collections import deque
@@ -50,10 +51,12 @@ class Agent:
 
     def build_actor(self):
         actor = Sequential()
-        actor.add(Dense(50, input_dim=self.state_size, batch_size=1, activation='relu', kernel_initializer='he_uniform'))
-        actor.add(Dense(50, activation='relu', kernel_initializer='he_uniform'))
+        actor.add(Dense(250, input_dim=self.state_size, batch_size=1, activation='relu', kernel_initializer='he_uniform'))
+        actor.add(Dense(250, activation='relu', kernel_initializer='he_uniform'))
         actor.add(Dense(self.action_size, activation='softmax', kernel_initializer='he_uniform'))
+        #actor.add(Dense(self.action_size, activation='sigmoid', kernel_initializer='he_uniform'))
         actor.compile(loss='categorical_crossentropy', optimizer='adam')
+        #actor.compile(loss='binary_crossentropy', optimizer='adam')
         return actor
 
     def build_critic(self):
@@ -102,6 +105,9 @@ def distance2(x1, y1, x2, y2):
 def distance(x1, y1, x2, y2):
     return math.sqrt(distance2(x1, y1, x2, y2))
 
+def hyp(x1, x2):
+    return math.sqrt(x1**2 + x2**2)
+
 #Constants to adjust
 #Friendly and enemy ships to encode by distance
 SHIPS = 5
@@ -115,6 +121,11 @@ while True:
     # TURN START
     # Update the map for the new turn and get the latest version
     game_map = game.update_map()
+
+    logging.info('Map Dim X: {}'.format(game_map.width))
+    logging.info('Map Dim Y: {}'.format(game_map.height))
+
+    DIST_NORM = hyp(game_map.width, game_map.height)
 
     logging.info('N Players: {}'.format(len(game_map.all_players())))
     N_ships = len(game_map.get_me().all_ships())
@@ -210,7 +221,7 @@ while True:
     ship_dict = {}
     # For every ship that I control
     for ship in game_map.get_me().all_ships():
-        
+
         #Calculate matrix of values for every ship that are ship specific
         dist_array = np.zeros(N_planets)
         angle_array = np.zeros(N_planets)
@@ -254,11 +265,11 @@ while True:
         logging.info(df.shape)
 
         logging.info(td.size)
-        
+
         ##Add in Friendly and Enemy ship matrix
         all_ships = game_map._all_ships()
         df_ships = pd.DataFrame(np.zeros((len(all_ships), 6)), columns=['ship_id', 'x', 'y', 'player', 'distance', 'status'])
-        
+
         ship_id_array = []
         ship_x_array = []
         ship_y_array = []
@@ -266,10 +277,8 @@ while True:
         ship_dist_array = []
         ship_status_array = []
 
-        ship_min_friendly_d = deque(np.zeros(SHIPS), maxlen = SHIPS)
-        ship_min_enemy_d = deque(np.zeros(SHIPS), maxlen = SHIPS)
-        ship_min_friendly_id = deque(np.zeros(SHIPS), maxlen = SHIPS)
-        ship_min_enemy_id = deque(np.zeros(SHIPS), maxlen = SHIPS)
+        ship_min_enemy = [(1000, -1)] * SHIPS
+        ship_min_friendly = [(1000, -1)] * SHIPS
 
         for s in all_ships:
             #ship_id_array = np.append(ship_id_array, s.id)
@@ -278,15 +287,22 @@ while True:
             ship_y_array.append(s.y)
             ship_player_array.append(s.owner.id)
             ship_status_array.append(s.docking_status)
-            
+
             dist = ship.calculate_distance_between(s)
             ship_dist_array.append(dist)
-            if (s.owner.id == game_map.my_id) & (dist < min(ship_min_friendly_d)) & (ship.id != s.id):
-                ship_min_friendly_d.append(dist)
-                ship_min_friendly_id.append(s.id)
+            running_max_e, _ = max(ship_min_enemy)
+            running_max_f, _ = max(ship_min_friendly)
+            if (s.owner.id != game_map.my_id) & (dist < running_max_e):
+                ship_min_enemy.pop()
+                ship_min_enemy.append((dist, s.id))
+                ship_min_enemy = sorted(ship_min_enemy)
+            if (s.owner.id == game_map.my_id) & (dist < running_max_f) & (ship.id != s.id):
+                ship_min_friendly.pop()
+                ship_min_friendly.append((dist, s.id))
+                ship_min_friendly = sorted(ship_min_friendly)
 
-        logging.info(ship_min_friendly_d)
-        logging.info(ship_min_friendly_id)
+        logging.info(ship_min_enemy)
+        logging.info(ship_min_friendly)
 
         df_ships.ship_id = ship_id_array
         df_ships.x = ship_x_array
@@ -295,20 +311,29 @@ while True:
         df_ships.distance = ship_dist_array
         df_ships.status = ship_status_array
 
+        ids_e = []
+        ids_f = []
+        for _, id, in ship_min_enemy:
+            ids_e.append(id)
+        for _, id, in ship_min_friendly:
+            ids_f.append(id)
         #logging.info(all_ships)
-        #logging.info(df_ships)
+        logging.info('SHIP')
+        logging.info(df_ships)
+        logging.info(df_ships[df_ships['ship_id'].isin(ids_e)])
 
         #df_ships_friend = df_ships[(df_ships.ship_id != ship.id) & (df_ships.player == game_map.my_id)]
         #df_ships_friend.sort_values('distance', inplace=True)
         #df_ships_enemy = df_ships[(df_ships.ship_id != ship.id) & (df_ships.player != game_map.my_id)]
         #df_ships_enemy.sort_values('distance', inplace=True)
         #logging.info(df_ships_enemy.head(5))
-        
+
         #df.sort("diff").groupby("item", as_index=False).first()
         #df.groupby('group_id')['A'].transform('min')
 
 
         #output is soft_max length 10 planets + 5 friend ships + 5 enemy ships
+        #output is sigmoid(0,1) length 3: percent of x, percent of y, percent of max velocity
         if turn == 0:
             MyAgent = Agent(td.size, N_planets)
             prior_state, prior_points = td, 0
@@ -331,7 +356,7 @@ while True:
         logging.info('Points: {}'.format(points))
         logging.info('Reward: {}'.format(reward))
 
-        MyAgent.train_model(prior_state, td, policy, reward)
+        #MyAgent.train_model(prior_state, td, policy, reward)
 
         # If the ship is docked
         if ship.docking_status != ship.DockingStatus.UNDOCKED:
