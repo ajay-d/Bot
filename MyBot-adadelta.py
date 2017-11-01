@@ -60,15 +60,15 @@ class Agent:
 
         self.actor_grads = tf.gradients(self.actor.outputs, actor_weights, -self.actor_critic_grad)
         grads = zip(self.actor_grads, actor_weights)
-        self.optimize = tf.train.AdamOptimizer().apply_gradients(grads)
+        self.optimize = tf.train.AdadeltaOptimizer().apply_gradients(grads)
 
         self.critic_grads = tf.gradients(self.critic.outputs, self.critic_action_input)
 
         self.sess.run(tf.global_variables_initializer())
         
         if self.load_model:
-            self.actor.load_weights("./model/actor.h5")
-            self.critic.load_weights("./model/critic.h5")
+            self.actor.load_weights("./model_1/actor.h5")
+            self.critic.load_weights("./model_1/critic.h5")
 
     def get_action(self, state):
         if self.epsilon > self.epsilon_min:
@@ -84,8 +84,8 @@ class Agent:
         
         actor = Model(inputs=state_input, outputs=output)
         adam = Adam(lr=0.01)
-        #'adam', 'adamax', 'adadelta', 'nadam'
-        actor.compile(loss="binary_crossentropy", optimizer='adam')
+        #'adam', 'adamax', 'adadelta', 'nadam', 'adagrad'
+        actor.compile(loss="binary_crossentropy", optimizer='adadelta')
         
         return state_input, actor
 
@@ -105,7 +105,7 @@ class Agent:
 
         critic = Model(inputs=[state_input, action_input], outputs=outputLayer)
         adam = Adam(lr=0.01)
-        critic.compile(loss='mse', optimizer='adam')
+        critic.compile(loss='mse', optimizer='adadelta')
         
         return state_input, action_input, critic
 
@@ -139,9 +139,9 @@ class Agent:
 
 # GAME START
 # Here we define the bot's name as Settler and initialize the game, including communication with the Halite engine.
-game = hlt.Game("Agent")
+game = hlt.Game("Adadelta")
 # Then we print our start message to the logs
-logging.info("Starting my Agent bot!")
+logging.info("Starting my Adadelta bot!")
 
 FEATURE_NAMES = [
     "health",
@@ -366,8 +366,7 @@ while True:
         logging.info(td.shape)
 
         logging.info('Individual Ship Metrics')
-        ship_metrics = [ship.x / game_map.width, ship.y / game_map.height, ship.health / MAX_HEALTH]
-        
+        ship_metrics = [ship.x / game_map.width, ship.y / game_map.height, ship.health / MAX_HEALTH, game_map.my_id]
         logging.info(ship_metrics)
         sm = np.array(ship_metrics).reshape(1, len(ship_metrics))
 
@@ -393,13 +392,7 @@ while True:
             ship_id_array.append(s.id)
             ship_x_array.append(s.x)
             ship_y_array.append(s.y)
-            
-            if s.owner.id == game_map.get_me():
-                ownership = 1
-            else:  # owned by enemy
-                ownership = 0
-            ship_player_array.append(ownership)
-
+            ship_player_array.append(s.owner.id)
             ship_status_array.append(s.docking_status)
             ship_angle_array.append(ship.calculate_angle_between(s))
             dist = ship.calculate_distance_between(s)
@@ -504,8 +497,8 @@ while True:
     
     if turn % 50 == 0:
         MyAgent.update_targets()
-        MyAgent.actor_target.save_weights("./model/actor.h5")
-        MyAgent.critic_target.save_weights("./model/critic.h5")
+        MyAgent.actor_target.save_weights("./model_1/actor.h5")
+        MyAgent.critic_target.save_weights("./model_1/critic.h5")
 
     turn += 1
     logging.info(turn)
@@ -523,5 +516,6 @@ while True:
 #+100 for new ship
 #-100 for dead ship
 #maybe +percent of board -50
-#python hlt_client\client.py gym -r "python MyBot.py" -r "python MyBot-Agent3.py" -b "halite" -i 100 -H 160 -W 240
-#.\halite -d "240 160" -t "python MyBot.py" "python MyBot-Agent3.py"
+#python hlt_client\client.py gym -r "python MyBot-adadelta.py" -r "python MyBot-adam.py" -b "halite" -i 100 -H 160 -W 240
+#.\halite -d "240 160" -t "python MyBot.py" "python MyBot-adam.py"
+#.\halite -d "240 160" -t "python MyBot.py" "python MyBot-adadelta.py"

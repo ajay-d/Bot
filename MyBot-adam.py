@@ -67,8 +67,8 @@ class Agent:
         self.sess.run(tf.global_variables_initializer())
         
         if self.load_model:
-            self.actor.load_weights("./model/actor.h5")
-            self.critic.load_weights("./model/critic.h5")
+            self.actor.load_weights("./model_0/actor.h5")
+            self.critic.load_weights("./model_0/critic.h5")
 
     def get_action(self, state):
         if self.epsilon > self.epsilon_min:
@@ -139,9 +139,9 @@ class Agent:
 
 # GAME START
 # Here we define the bot's name as Settler and initialize the game, including communication with the Halite engine.
-game = hlt.Game("Agent")
+game = hlt.Game("Adam")
 # Then we print our start message to the logs
-logging.info("Starting my Agent bot!")
+logging.info("Starting my Adam bot!")
 
 FEATURE_NAMES = [
     "health",
@@ -504,8 +504,8 @@ while True:
     
     if turn % 50 == 0:
         MyAgent.update_targets()
-        MyAgent.actor_target.save_weights("./model/actor.h5")
-        MyAgent.critic_target.save_weights("./model/critic.h5")
+        MyAgent.actor_target.save_weights("./model_0/actor.h5")
+        MyAgent.critic_target.save_weights("./model_0/critic.h5")
 
     turn += 1
     logging.info(turn)
@@ -523,5 +523,6 @@ while True:
 #+100 for new ship
 #-100 for dead ship
 #maybe +percent of board -50
-#python hlt_client\client.py gym -r "python MyBot.py" -r "python MyBot-Agent3.py" -b "halite" -i 100 -H 160 -W 240
-#.\halite -d "240 160" -t "python MyBot.py" "python MyBot-Agent3.py"
+#python hlt_client\client.py gym -r "python MyBot-adadelta.py" -r "python MyBot-adam.py" -b "halite" -i 100 -H 160 -W 240
+#.\halite -d "240 160" -t "python MyBot.py" "python MyBot-adam.py"
+#.\halite -d "240 160" -t "python MyBot.py" "python MyBot-adadelta.py"
