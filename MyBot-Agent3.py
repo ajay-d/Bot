@@ -12,9 +12,11 @@ to log anything use the logging module.
 """
 import os
 os.environ["KERAS_BACKEND"] = "tensorflow"
+import keras
 from keras.optimizers import Adam
-from keras.models import Sequential
-from keras.layers import Dense, Dropout, Activation
+from keras.models import Sequential, Model
+from keras.layers import Dense, Input, Activation
+from keras.layers.merge import Add
 
 # Let's start by importing the Halite Starter Kit so we can interface with the Halite engine
 import hlt
@@ -24,24 +26,46 @@ import pandas as pd
 import numpy as np
 import math
 
+import keras.backend as K
+import tensorflow as tf
+
 from sklearn import preprocessing
 from collections import deque
 
+sess = tf.Session()
+K.set_session(sess)
+
 class Agent:
-    def __init__(self, state_size, action_size):
+    def __init__(self, state_size, action_size, sess):
         self.load_model = False
 
         # get size of state and action
         self.state_size = state_size
         self.action_size = action_size
+        self.sess = sess
 
         self.gamma = 0.95
         self.epsilon = 1.0
         self.epsilon_min = 0.01
         self.epsilon_decay = 0.995
 
-        self.actor = self.build_actor()
-        self.critic = self.build_critic()
+        self.actor_state_input, self.actor = self.build_actor()
+        self.critic_state_input, self.critic_action_input, self.critic = self.build_critic()
+
+        self.actor_critic_grad = tf.placeholder(tf.float32, [None, self.action_size])
+        actor_weights = self.actor.trainable_weights
+
+        self.actor_grads = tf.gradients(self.actor.outputs, actor_weights, -self.actor_critic_grad)
+        grads = zip(self.actor_grads, actor_weights)
+        self.optimize = tf.train.AdamOptimizer().apply_gradients(grads)
+
+        self.critic_grads = tf.gradients(self.critic.outputs, self.critic_action_input)
+
+        self.sess.run(tf.global_variables_initializer())
+        
+        if self.load_model:
+            self.actor.load_weights("./model/actor.h5")
+            self.critic.load_weights("./model/critic.h5")
 
     def get_action(self, state):
         if self.epsilon > self.epsilon_min:
@@ -50,44 +74,56 @@ class Agent:
         return policy
 
     def build_actor(self):
-        actor = Sequential()
-        actor.add(Dense(250, input_dim=self.state_size, batch_size=1, activation='relu', kernel_initializer='he_uniform'))
-        actor.add(Dense(250, activation='relu', kernel_initializer='he_uniform'))
-        #actor.add(Dense(self.action_size, activation='softmax', kernel_initializer='he_uniform'))
-        actor.add(Dense(self.action_size, activation='sigmoid', kernel_initializer='he_uniform'))
-        #actor.compile(loss='categorical_crossentropy', optimizer='adam')
-        actor.compile(loss='binary_crossentropy', optimizer='adam')
-        return actor
+        state_input = Input(shape=(self.state_size,))
+        h1 = Dense(250, activation='relu', kernel_initializer='he_uniform')(state_input)
+        h2 = Dense(250, activation='relu', kernel_initializer='he_uniform')(h1)
+        output = Dense(self.action_size, activation='sigmoid', kernel_initializer='he_uniform')(h2)
+        
+        actor = Model(inputs=state_input, outputs=output)
+        adam = Adam(lr=0.01)
+        actor.compile(loss="binary_crossentropy", optimizer=adam)
+        
+        return state_input, actor
 
     def build_critic(self):
-        critic = Sequential()
-        critic.add(Dense(50, input_dim=self.state_size, batch_size=1, activation='relu', kernel_initializer='he_uniform'))
-        critic.add(Dense(50, activation='relu', kernel_initializer='he_uniform'))
-        critic.add(Dense(1, activation='linear', kernel_initializer='he_uniform'))
-        critic.compile(loss='mse', optimizer='adam')
-        return critic
+
+        state_input = Input(shape=(self.state_size,))
+        state_h1 = Dense(200, activation='relu', kernel_initializer='he_uniform')(state_input)
+        state_h2 = Dense(250, activation='relu', kernel_initializer='he_uniform')(state_h1)
+
+        action_input = Input(shape=(self.action_size,))
+        action_h1 = Dense(50, activation='relu', kernel_initializer='he_uniform')(action_input)
+        action_h2 = Dense(250, activation='relu', kernel_initializer='he_uniform')(action_h1)
+
+        mergedLayer = Add()([state_h2, action_h2])
+        mergedLayer_h1 = Dense(100, activation='relu', kernel_initializer='he_uniform')(mergedLayer)
+        outputLayer = Dense(1, activation='relu')(mergedLayer_h1)
+
+        critic = Model(inputs=[state_input, action_input], outputs=outputLayer)
+        adam = Adam(lr=0.01)
+        critic.compile(loss='mse', optimizer=adam)
+        
+        return state_input, action_input, critic
 
     def train_model(self, prior_state, state, action, reward):
+              
+        target_action = self.actor.predict(state, batch_size=1)
+        future_reward = self.critic.predict([state, target_action], batch_size=1)[0][0]
         
+        reward += self.gamma * future_reward
         target = np.array([reward])
-        advantages = np.zeros((1, self.action_size))
-        
-        logging.info(prior_state.shape)
-        logging.info(state.shape)
-        logging.info(action.shape)
-        logging.info(target.shape)
 
-        value = self.critic.predict(prior_state, batch_size=1)[0]
-        next_value = self.critic.predict(state, batch_size=1)[0]
-        logging.info("HERE1")
-        logging.info(advantages)
-        logging.info(advantages[0][action])
-        advantages[0][action] = reward + self.gamma * (next_value) - value
-        logging.info("HERE2")
-        target[0] = reward + self.gamma * next_value
-        logging.info("HERE3")
-        self.actor.fit(state, advantages, batch_size=1, epochs=1, verbose=0)
-        self.critic.fit(state, target, batch_size=1, epochs=1, verbose=0)
+        self.critic.fit([prior_state, action], target, batch_size=1, epochs=1, verbose=0)
+        
+        grads = self.sess.run(self.critic_grads, 
+                              feed_dict={
+                                  self.critic_state_input:  prior_state,
+                                  self.critic_action_input: action})[0]
+
+        self.sess.run(self.optimize, 
+                      feed_dict={
+                          self.actor_state_input: prior_state,
+                          self.actor_critic_grad: grads})
 
 # GAME START
 # Here we define the bot's name as Settler and initialize the game, including communication with the Halite engine.
@@ -356,8 +392,8 @@ while True:
         #logging.info(df_ships[df_ships['ship_id'].isin(ids_e)])
 
         #output is sigmoid(0,1) length 3: percent of x, percent of y, percent of max velocity
-        if turn == 0:
-            MyAgent = Agent(td.size, 3)
+        if 'MyAgent' not in locals():
+            MyAgent = Agent(td.size, 3, sess)
 
         policy = MyAgent.get_action(td)
 
@@ -413,6 +449,10 @@ while True:
                 MyAgent.train_model(prior_state, cur_state, prior_action, points)
                 logging.info('Training worked')
     
+    if turn % 50 == 0:
+        MyAgent.actor.save_weights("./model/actor.h5")
+        MyAgent.critic.save_weights("./model/critic.h5")
+
     turn += 1
     logging.info(turn)
 
