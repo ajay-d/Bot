@@ -1,14 +1,5 @@
 """
 Welcome to your first Halite-II bot!
-
-This bot's name is Settler. It's purpose is simple (don't expect it to win complex games :) ):
-1. Initialize game
-2. If a ship is not docked and there are unowned planets
-2.a. Try to Dock in the planet if close enough
-2.b If not, go towards the planet
-
-Note: Please do not place print statements here as they are used to communicate with the Halite engine. If you need
-to log anything use the logging module.
 """
 import os
 os.environ["KERAS_BACKEND"] = "tensorflow"
@@ -37,7 +28,7 @@ K.set_session(sess)
 
 class Agent:
     def __init__(self, state_size, action_size, sess):
-        self.load_model = True
+        self.load_model = False
 
         # get size of state and action
         self.state_size = state_size
@@ -61,14 +52,15 @@ class Agent:
         self.actor_grads = tf.gradients(self.actor.outputs, actor_weights, -self.actor_critic_grad)
         grads = zip(self.actor_grads, actor_weights)
         self.optimize = tf.train.AdamOptimizer().apply_gradients(grads)
+        #self.optimize = tf.train.AdadeltaOptimizer().apply_gradients(grads)
 
         self.critic_grads = tf.gradients(self.critic.outputs, self.critic_action_input)
 
         self.sess.run(tf.global_variables_initializer())
-        
+
         if self.load_model:
-            self.actor.load_weights("./model_0/actor.h5")
-            self.critic.load_weights("./model_0/critic.h5")
+            self.actor.load_weights("./model_%d/actor.h5" % (game_map.my_id))
+            self.critic.load_weights("./model_%d/critic.h5" % (game_map.my_id))
 
     def get_action(self, state):
         if self.epsilon > self.epsilon_min:
@@ -81,12 +73,12 @@ class Agent:
         h1 = Dense(250, activation='relu', kernel_initializer='he_uniform')(state_input)
         h2 = Dense(250, activation='relu', kernel_initializer='he_uniform')(h1)
         output = Dense(self.action_size, activation='sigmoid', kernel_initializer='he_uniform')(h2)
-        
+
         actor = Model(inputs=state_input, outputs=output)
         adam = Adam(lr=0.01)
         #'adam', 'adamax', 'adadelta', 'nadam'
         actor.compile(loss="binary_crossentropy", optimizer='adam')
-        
+
         return state_input, actor
 
     def build_critic(self):
@@ -106,29 +98,29 @@ class Agent:
         critic = Model(inputs=[state_input, action_input], outputs=outputLayer)
         adam = Adam(lr=0.01)
         critic.compile(loss='mse', optimizer='adam')
-        
+
         return state_input, action_input, critic
 
     def train_model(self, prior_state, state, action, reward):
-              
+
         target_action = self.actor_target.predict(state, batch_size=1)
         future_reward = self.critic_target.predict([state, target_action], batch_size=1)[0][0]
-        
+
         reward += self.gamma * future_reward
         target = np.array([reward])
 
         self.critic.fit([prior_state, action], target, batch_size=1, epochs=1, verbose=0)
-        
-        grads = self.sess.run(self.critic_grads, 
+
+        grads = self.sess.run(self.critic_grads,
                               feed_dict={
                                   self.critic_state_input:  prior_state,
                                   self.critic_action_input: action})[0]
 
-        self.sess.run(self.optimize, 
+        self.sess.run(self.optimize,
                       feed_dict={
                           self.actor_state_input: prior_state,
                           self.actor_critic_grad: grads})
-    
+
     def update_targets(self):
         actor_weights  = self.actor.get_weights()
         critic_weights = self.critic.get_weights()
@@ -190,8 +182,6 @@ while True:
 
     logging.info('Map Dim X: {}'.format(game_map.width))
     logging.info('Map Dim Y: {}'.format(game_map.height))
-
-    DIST_NORM = hyp(game_map.width, game_map.height)
 
     logging.info('N Players: {}'.format(len(game_map.all_players())))
     N_ships = len(game_map.get_me().all_ships())
@@ -298,6 +288,7 @@ while True:
     for s in game_map.get_me().all_ships():
         cur_ship_ids.append(s.id)
 
+    NEW_SHIP = 0
     if turn > 0:
         for s in ship_states[turn-1]:
             if s not in cur_ship_ids:
@@ -307,8 +298,10 @@ while True:
             if ship.id not in ship_states[turn-1]:
                 #if we gained a new ship from the last state
                 points += 100
+                NEW_SHIP = 1
 
     logging.info('Points: {}'.format(points))
+    logging.info('New Ship: {}'.format(NEW_SHIP))
 
     #Dict to hold ship states and actions
     ship_dict = {}
@@ -367,7 +360,7 @@ while True:
 
         logging.info('Individual Ship Metrics')
         ship_metrics = [ship.x / game_map.width, ship.y / game_map.height, ship.health / MAX_HEALTH]
-        
+
         logging.info(ship_metrics)
         sm = np.array(ship_metrics).reshape(1, len(ship_metrics))
 
@@ -385,15 +378,12 @@ while True:
         ship_status_array = []
         ship_angle_array = []
 
-        ship_min_enemy = [(1000, -1)] * MAX_SHIPS
-        ship_min_friendly = [(1000, -1)] * MAX_SHIPS
-
         for s in all_ships:
             #ship_id_array = np.append(ship_id_array, s.id)
             ship_id_array.append(s.id)
             ship_x_array.append(s.x)
             ship_y_array.append(s.y)
-            
+
             if s.owner.id == game_map.get_me():
                 ownership = 1
             else:  # owned by enemy
@@ -404,19 +394,6 @@ while True:
             ship_angle_array.append(ship.calculate_angle_between(s))
             dist = ship.calculate_distance_between(s)
             ship_dist_array.append(dist)
-            running_max_e, _ = max(ship_min_enemy)
-            running_max_f, _ = max(ship_min_friendly)
-            if (s.owner.id != game_map.my_id) & (dist < running_max_e):
-                ship_min_enemy.pop()
-                ship_min_enemy.append((dist, s.id))
-                ship_min_enemy = sorted(ship_min_enemy)
-            if (s.owner.id == game_map.my_id) & (dist < running_max_f) & (ship.id != s.id):
-                ship_min_friendly.pop()
-                ship_min_friendly.append((dist, s.id))
-                ship_min_friendly = sorted(ship_min_friendly)
-
-        #logging.info(ship_min_enemy)
-        #logging.info(ship_min_friendly)
 
         df_ships.ship_id = ship_id_array
         df_ships.x = np.array(ship_x_array) / game_map.width
@@ -426,32 +403,34 @@ while True:
         df_ships.angle = np.array(ship_angle_array) / 360
         df_ships.status = ship_status_array
 
-        ids_e = []
-        ids_f = []
-        for _, id, in ship_min_enemy:
-            ids_e.append(id)
-        for _, id, in ship_min_friendly:
-            ids_f.append(id)
-        #logging.info(all_ships)
-        #logging.info('SHIP')
-        #logging.info(df_ships)
-        #logging.info(df_ships[df_ships['ship_id'].isin(ids_e)])
-
         df_ship_train = df_ships.sort_values('distance')
+        #split between friendly and enemy ships
         df_ship_train = df_ship_train.drop(['ship_id', 'status'], axis=1)
-        sd = df_ship_train.values
 
-        N_SHIP_FEATURES = sd.shape[1]
-        rows_to_add = MAX_SHIPS-sd.shape[0]
+        df_ship_friendly = df_ship_train[(df_ship_train.player == 1)]
+        df_ship_enemy = df_ship_train[(df_ship_train.player == 0)]
 
+        ship_td_friendly = df_ship_friendly.values
+        ship_td_enemy = df_ship_enemy.values
+
+        N_SHIP_FEATURES = df_ship_train.shape[1]
+
+        rows_to_add = MAX_SHIPS - ship_td_friendly.shape[0]
         if rows_to_add > 0:
-            sd = np.vstack((sd, np.zeros((rows_to_add, N_SHIP_FEATURES))))
+            ship_td_friendly = np.vstack((ship_td_friendly, np.zeros((rows_to_add, N_SHIP_FEATURES))))
         else:
-            sd = sd[0:MAX_SHIPS, :]
+            ship_td_friendly = ship_td_friendly[0:MAX_SHIPS, :]
 
-        sd = sd.reshape((1, sd.size))
+        rows_to_add = MAX_SHIPS - ship_td_enemy.shape[0]
+        if rows_to_add > 0:
+            ship_td_enemy = np.vstack((ship_td_enemy, np.zeros((rows_to_add, N_SHIP_FEATURES))))
+        else:
+            ship_td_enemy = ship_td_enemy[0:MAX_SHIPS, :]
 
-        td = np.concatenate((td, sd), axis=1)
+        ship_td_friendly = ship_td_friendly.reshape((1, ship_td_friendly.size))
+        ship_td_enemy = ship_td_enemy.reshape((1, ship_td_enemy.size))
+
+        td = np.concatenate((td, ship_td_friendly, ship_td_enemy), axis=1)
 
         #output is sigmoid(0,1) length 3: percent of x, percent of y, percent of max velocity
         if 'MyAgent' not in locals():
@@ -473,22 +452,22 @@ while True:
         for planet in game_map.all_planets():
             if planet.is_full():
                 continue
-            elif (planet.owner == game_map.get_me()) & (ship.can_dock(planet)):
+            elif (planet.owner == game_map.get_me()) & (ship.can_dock(planet)) & (NEW_SHIP == 0):
                 dock_command = ship.dock(planet)
-            elif (planet.owner is None) & (ship.can_dock(planet)):
+            elif (planet.owner is None) & (ship.can_dock(planet)) & (NEW_SHIP == 0):
                 dock_command = ship.dock(planet)
             # If we can dock, let's (try to) dock. If two ships try to dock at once, neither will be able to.
-        
+
         if dock_command is None:
             speed = policy[0][2] * hlt.constants.MAX_SPEED
             a = angle_between(ship.x, ship.y, policy[0][0] * game_map.width, policy[0][1] * game_map.height)
             navigate_command = ship.thrust(speed, a)
         else:
             navigate_command = dock_command
-        
+
         if navigate_command:
             command_queue.append(navigate_command)
-        
+
     logging.info('Turn: {}'.format(turn))
     logging.info('Command: {}'.format(command_queue))
     #Train based on previous actions
@@ -501,11 +480,11 @@ while True:
                 cur_state, cur_action = ship_dict[k]
                 MyAgent.train_model(prior_state, cur_state, prior_action, points)
                 logging.info('Training worked')
-    
+
     if turn % 50 == 0:
         MyAgent.update_targets()
-        MyAgent.actor_target.save_weights("./model_0/actor.h5")
-        MyAgent.critic_target.save_weights("./model_0/critic.h5")
+        MyAgent.actor_target.save_weights("./model_%d/actor.h5" % (game_map.my_id))
+        MyAgent.critic_target.save_weights("./model_%d/critic.h5" % (game_map.my_id))
 
     turn += 1
     logging.info(turn)
@@ -523,6 +502,11 @@ while True:
 #+100 for new ship
 #-100 for dead ship
 #maybe +percent of board -50
-#python hlt_client\client.py gym -r "python MyBot-adadelta.py" -r "python MyBot-adam.py" -b "halite" -i 100 -H 160 -W 240
-#.\halite -d "240 160" -t "python MyBot.py" "python MyBot-adam.py"
-#.\halite -d "240 160" -t "python MyBot.py" "python MyBot-adadelta.py"
+
+#Windows
+#python hlt_client\client.py gym -r "python MyBot.py" -r "python MyBot-Agent.py" -b "halite" -i 100 -H 160 -W 240
+#.\halite -d "240 160" -t "python MyBot.py" "python MyBot-Agent.py"
+
+#Mac
+#./halite -d "240 160" -t "python MyBot-Agent.py" "python MyBot.py"
+#./hlt_client/client.py gym -r "python MyBot-adadelta.py" -r "python MyBot-adam.py" -b "./halite" -i 100 -H 160 -W 240
