@@ -28,7 +28,7 @@ K.set_session(sess)
 
 class Agent:
     def __init__(self, state_size, action_size, sess):
-        self.load_model = False
+        self.load_model = True
 
         # get size of state and action
         self.state_size = state_size
@@ -38,7 +38,7 @@ class Agent:
         self.gamma = 0.95
         self.epsilon = 1.0
         self.epsilon_min = 0.01
-        self.epsilon_decay = 0.995
+        self.epsilon_decay = 0.97
 
         self.actor_state_input, self.actor = self.build_actor()
         self.critic_state_input, self.critic_action_input, self.critic = self.build_critic()
@@ -65,14 +65,18 @@ class Agent:
     def get_action(self, state):
         if self.epsilon > self.epsilon_min:
             self.epsilon *= self.epsilon_decay
-        policy = self.actor.predict(state, batch_size=1)
+        if np.random.random() < self.epsilon:
+            policy = np.random.rand(1, self.action_size)
+        else:
+            policy = self.actor_target.predict(state, batch_size=1)
         return policy
 
     def build_actor(self):
         state_input = Input(shape=(self.state_size,))
-        h1 = Dense(250, activation='relu', kernel_initializer='he_uniform')(state_input)
+        h1 = Dense(500, activation='relu', kernel_initializer='he_uniform')(state_input)
         h2 = Dense(250, activation='relu', kernel_initializer='he_uniform')(h1)
-        output = Dense(self.action_size, activation='sigmoid', kernel_initializer='he_uniform')(h2)
+        h3 = Dense(100, activation='relu', kernel_initializer='he_uniform')(h2)
+        output = Dense(self.action_size, activation='sigmoid', kernel_initializer='he_uniform')(h3)
 
         actor = Model(inputs=state_input, outputs=output)
         adam = Adam(lr=0.01)
@@ -84,16 +88,17 @@ class Agent:
     def build_critic(self):
 
         state_input = Input(shape=(self.state_size,))
-        state_h1 = Dense(200, activation='relu', kernel_initializer='he_uniform')(state_input)
+        state_h1 = Dense(500, activation='relu', kernel_initializer='he_uniform')(state_input)
         state_h2 = Dense(250, activation='relu', kernel_initializer='he_uniform')(state_h1)
 
         action_input = Input(shape=(self.action_size,))
-        action_h1 = Dense(50, activation='relu', kernel_initializer='he_uniform')(action_input)
+        action_h1 = Dense(500, activation='relu', kernel_initializer='he_uniform')(action_input)
         action_h2 = Dense(250, activation='relu', kernel_initializer='he_uniform')(action_h1)
 
         mergedLayer = Add()([state_h2, action_h2])
-        mergedLayer_h1 = Dense(100, activation='relu', kernel_initializer='he_uniform')(mergedLayer)
-        outputLayer = Dense(1, activation='relu')(mergedLayer_h1)
+        mergedLayer_h1 = Dense(500, activation='relu', kernel_initializer='he_uniform')(mergedLayer)
+        mergedLayer_h2 = Dense(250, activation='relu', kernel_initializer='he_uniform')(mergedLayer_h1)
+        outputLayer = Dense(1, activation='relu')(mergedLayer_h2)
 
         critic = Model(inputs=[state_input, action_input], outputs=outputLayer)
         adam = Adam(lr=0.01)
@@ -283,12 +288,12 @@ while True:
     df.pct_enemy_ships = df.pct_enemy_ships / df.spots
 
     ##Calculate points for training
+    #Points are the same for all ship in the current round
     points = (N_ships - N_enemy_ships) * 100
     cur_ship_ids = []
     for s in game_map.get_me().all_ships():
         cur_ship_ids.append(s.id)
 
-    NEW_SHIP = 0
     if turn > 0:
         for s in ship_states[turn-1]:
             if s not in cur_ship_ids:
@@ -298,10 +303,8 @@ while True:
             if ship.id not in ship_states[turn-1]:
                 #if we gained a new ship from the last state
                 points += 100
-                NEW_SHIP = 1
 
     logging.info('Points: {}'.format(points))
-    logging.info('New Ship: {}'.format(NEW_SHIP))
 
     #Dict to hold ship states and actions
     ship_dict = {}
@@ -359,7 +362,8 @@ while True:
         logging.info(td.shape)
 
         logging.info('Individual Ship Metrics')
-        ship_metrics = [ship.x / game_map.width, ship.y / game_map.height, ship.health / MAX_HEALTH]
+        #Game level metrics too
+        ship_metrics = [ship.x / game_map.width, ship.y / game_map.height, ship.health / MAX_HEALTH, pct_owned[turn]/100, N_planets/PLANET_MAX_NUM, N_planets/N_starting_planets]
 
         logging.info(ship_metrics)
         sm = np.array(ship_metrics).reshape(1, len(ship_metrics))
@@ -431,6 +435,7 @@ while True:
         ship_td_enemy = ship_td_enemy.reshape((1, ship_td_enemy.size))
 
         td = np.concatenate((td, ship_td_friendly, ship_td_enemy), axis=1)
+        logging.info('Input Dim: {}'.format(td.shape))
 
         #output is sigmoid(0,1) length 3: percent of x, percent of y, percent of max velocity
         if 'MyAgent' not in locals():
@@ -443,6 +448,14 @@ while True:
         logging.info('Policy: {}'.format(policy))
         logging.info('Points: {}'.format(points))
         #logging.info(ship_dict)
+
+        #check to see if this is a new ship
+        NEW_SHIP = 0
+        if turn > 0 :
+            if ship.id not in ship_states[turn-1]:
+                NEW_SHIP = 1
+
+        logging.info('New Ship: {}'.format(NEW_SHIP))
 
         # If the ship is docking, docked or undocking
         if ship.docking_status != ship.DockingStatus.UNDOCKED:
@@ -506,6 +519,12 @@ while True:
 #Windows
 #python hlt_client\client.py gym -r "python MyBot.py" -r "python MyBot-Agent.py" -b "halite" -i 100 -H 160 -W 240
 #.\halite -d "240 160" -t "python MyBot.py" "python MyBot-Agent.py"
+
+#.\halite -d "240 160" -t "python MyBot.py" "python MyBot-adam.py"
+#.\halite -d "240 160" -t "python MyBot-adadelta.py" "python MyBot.py"
+#python hlt_client\client.py gym -r "python MyBot.py" -r "python MyBot-adam.py" -b "halite" -i 1000 -H 160 -W 240
+#python hlt_client\client.py gym -r "python MyBot-adadelta.py" -r "python MyBot.py" -b "halite" -i 1000 -H 160 -W 240
+#python hlt_client\client.py gym -r "python MyBot-adadelta.py" -r "python MyBot-adam.py" -b "halite" -i 1000 -H 160 -W 240
 
 #Mac
 #./halite -d "240 160" -t "python MyBot-Agent.py" "python MyBot.py"

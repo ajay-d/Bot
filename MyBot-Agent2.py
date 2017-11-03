@@ -1,20 +1,13 @@
 """
 Welcome to your first Halite-II bot!
-
-This bot's name is Settler. It's purpose is simple (don't expect it to win complex games :) ):
-1. Initialize game
-2. If a ship is not docked and there are unowned planets
-2.a. Try to Dock in the planet if close enough
-2.b If not, go towards the planet
-
-Note: Please do not place print statements here as they are used to communicate with the Halite engine. If you need
-to log anything use the logging module.
 """
 import os
 os.environ["KERAS_BACKEND"] = "tensorflow"
+import keras
 from keras.optimizers import Adam
-from keras.models import Sequential
-from keras.layers import Dense, Dropout, Activation
+from keras.models import Sequential, Model
+from keras.layers import Dense, Input, Activation
+from keras.layers.merge import Add
 
 # Let's start by importing the Halite Starter Kit so we can interface with the Halite engine
 import hlt
@@ -24,24 +17,50 @@ import pandas as pd
 import numpy as np
 import math
 
+import keras.backend as K
+import tensorflow as tf
+
 from sklearn import preprocessing
 from collections import deque
 
+sess = tf.Session()
+K.set_session(sess)
+
 class Agent:
-    def __init__(self, state_size, action_size):
-        self.load_model = False
+    def __init__(self, state_size, action_size, sess):
+        self.load_model = True
 
         # get size of state and action
         self.state_size = state_size
         self.action_size = action_size
+        self.sess = sess
 
         self.gamma = 0.95
         self.epsilon = 1.0
         self.epsilon_min = 0.01
         self.epsilon_decay = 0.995
 
-        self.actor = self.build_actor()
-        self.critic = self.build_critic()
+        self.actor_state_input, self.actor = self.build_actor()
+        self.critic_state_input, self.critic_action_input, self.critic = self.build_critic()
+
+        _ , self.actor_target = self.build_actor()
+        _ , _ , self.critic_target = self.build_critic()
+
+        self.actor_critic_grad = tf.placeholder(tf.float32, [None, self.action_size])
+        actor_weights = self.actor.trainable_weights
+
+        self.actor_grads = tf.gradients(self.actor.outputs, actor_weights, -self.actor_critic_grad)
+        grads = zip(self.actor_grads, actor_weights)
+        self.optimize = tf.train.AdamOptimizer().apply_gradients(grads)
+        #self.optimize = tf.train.AdadeltaOptimizer().apply_gradients(grads)
+
+        self.critic_grads = tf.gradients(self.critic.outputs, self.critic_action_input)
+
+        self.sess.run(tf.global_variables_initializer())
+
+        if self.load_model:
+            self.actor.load_weights("./model/actor.h5")
+            self.critic.load_weights("./model/critic.h5")
 
     def get_action(self, state):
         if self.epsilon > self.epsilon_min:
@@ -50,44 +69,67 @@ class Agent:
         return policy
 
     def build_actor(self):
-        actor = Sequential()
-        actor.add(Dense(250, input_dim=self.state_size, batch_size=1, activation='relu', kernel_initializer='he_uniform'))
-        actor.add(Dense(250, activation='relu', kernel_initializer='he_uniform'))
-        #actor.add(Dense(self.action_size, activation='softmax', kernel_initializer='he_uniform'))
-        actor.add(Dense(self.action_size, activation='sigmoid', kernel_initializer='he_uniform'))
-        #actor.compile(loss='categorical_crossentropy', optimizer='adam')
-        actor.compile(loss='binary_crossentropy', optimizer='adam')
-        return actor
+        state_input = Input(shape=(self.state_size,))
+        h1 = Dense(500, activation='relu', kernel_initializer='he_uniform')(state_input)
+        h2 = Dense(250, activation='relu', kernel_initializer='he_uniform')(h1)
+        h3 = Dense(100, activation='relu', kernel_initializer='he_uniform')(h2)
+        output = Dense(self.action_size, activation='sigmoid', kernel_initializer='he_uniform')(h3)
+
+        actor = Model(inputs=state_input, outputs=output)
+        adam = Adam(lr=0.01)
+        #'adam', 'adamax', 'adadelta', 'nadam'
+        actor.compile(loss="binary_crossentropy", optimizer='adam')
+
+        return state_input, actor
 
     def build_critic(self):
-        critic = Sequential()
-        critic.add(Dense(50, input_dim=self.state_size, batch_size=1, activation='relu', kernel_initializer='he_uniform'))
-        critic.add(Dense(50, activation='relu', kernel_initializer='he_uniform'))
-        critic.add(Dense(1, activation='linear', kernel_initializer='he_uniform'))
+
+        state_input = Input(shape=(self.state_size,))
+        state_h1 = Dense(500, activation='relu', kernel_initializer='he_uniform')(state_input)
+        state_h2 = Dense(250, activation='relu', kernel_initializer='he_uniform')(state_h1)
+
+        action_input = Input(shape=(self.action_size,))
+        action_h1 = Dense(500, activation='relu', kernel_initializer='he_uniform')(action_input)
+        action_h2 = Dense(250, activation='relu', kernel_initializer='he_uniform')(action_h1)
+
+        mergedLayer = Add()([state_h2, action_h2])
+        mergedLayer_h1 = Dense(500, activation='relu', kernel_initializer='he_uniform')(mergedLayer)
+        mergedLayer_h2 = Dense(250, activation='relu', kernel_initializer='he_uniform')(mergedLayer_h1)
+        outputLayer = Dense(1, activation='relu')(mergedLayer_h2)
+
+        critic = Model(inputs=[state_input, action_input], outputs=outputLayer)
+        adam = Adam(lr=0.01)
         critic.compile(loss='mse', optimizer='adam')
-        return critic
+
+        return state_input, action_input, critic
 
     def train_model(self, prior_state, state, action, reward):
-        
-        target = np.array([reward])
-        advantages = np.zeros((1, self.action_size))
-        
-        logging.info(prior_state.shape)
-        logging.info(state.shape)
-        logging.info(action.shape)
-        logging.info(target.shape)
 
-        value = self.critic.predict(prior_state, batch_size=1)[0]
-        next_value = self.critic.predict(state, batch_size=1)[0]
-        logging.info("HERE1")
-        logging.info(advantages)
-        logging.info(advantages[0][action])
-        advantages[0][action] = reward + self.gamma * (next_value) - value
-        logging.info("HERE2")
-        target[0] = reward + self.gamma * next_value
-        logging.info("HERE3")
-        self.actor.fit(state, advantages, batch_size=1, epochs=1, verbose=0)
-        self.critic.fit(state, target, batch_size=1, epochs=1, verbose=0)
+        target_action = self.actor_target.predict(state, batch_size=1)
+        future_reward = self.critic_target.predict([state, target_action], batch_size=1)[0][0]
+
+        reward += self.gamma * future_reward
+        target = np.array([reward])
+
+        self.critic.fit([prior_state, action], target, batch_size=1, epochs=1, verbose=0)
+
+        grads = self.sess.run(self.critic_grads,
+                              feed_dict={
+                                  self.critic_state_input:  prior_state,
+                                  self.critic_action_input: action})[0]
+
+        self.sess.run(self.optimize,
+                      feed_dict={
+                          self.actor_state_input: prior_state,
+                          self.actor_critic_grad: grads})
+
+    def update_targets(self):
+        actor_weights  = self.actor.get_weights()
+        critic_weights = self.critic.get_weights()
+
+        self.actor_target.set_weights(actor_weights)
+        self.critic_target.set_weights(critic_weights)
+
 
 # GAME START
 # Here we define the bot's name as Settler and initialize the game, including communication with the Halite engine.
@@ -117,15 +159,18 @@ def distance(x1, y1, x2, y2):
 def hyp(x1, x2):
     return math.sqrt(x1**2 + x2**2)
 
+def angle_between(x1, y1, x2, y2):
+    return math.degrees(math.atan2(y2 - y1, x2 - x1)) % 360
+
 #Constants to adjust
 #Friendly and enemy ships to encode by distance
-SHIPS = 5
-#Nearest planets to encode
-PLANETS = 10
+MAX_SHIPS = 10
+
 MAX_RADIUS = 16
 MAX_SPOTS = 6
 MAX_PROD = 2500
 MAX_HEALTH = 5000
+PLANET_MAX_NUM = 28
 
 turn = 0
 pct_owned = deque(maxlen=2000)
@@ -139,8 +184,6 @@ while True:
 
     logging.info('Map Dim X: {}'.format(game_map.width))
     logging.info('Map Dim Y: {}'.format(game_map.height))
-
-    DIST_NORM = hyp(game_map.width, game_map.height)
 
     logging.info('N Players: {}'.format(len(game_map.all_players())))
     N_ships = len(game_map.get_me().all_ships())
@@ -161,7 +204,7 @@ while True:
     if turn == 0:
         df = pd.DataFrame(np.zeros((N_planets, 18)),
             columns=['planet', 'x', 'y', 'radius', 'spots',
-                     'health', 'current_production', 'remaining_production', 'ownership', 'n_docked_ships', 'n_my_ships', 'n_enemy_ships', 'is_full',
+                     'health', 'current_production', 'remaining_production', 'ownership', 'pct_docked_ships', 'pct_my_ships', 'pct_enemy_ships', 'is_full',
                      'distance', 'angle', 'nearest_friend', 'nearest_enemy', 'n_obstacles'])
         df['planet'] = np.arange(0, N_planets, 1)
 
@@ -171,13 +214,16 @@ while True:
         y_array = np.zeros(N_planets)
         for planet in game_map.all_planets():
             radius_array[planet.id] = planet.radius / game_map.height
-            spots_array[planet.id] = planet.num_docking_spots / MAX_SPOTS
+            spots_array[planet.id] = planet.num_docking_spots
             x_array[planet.id] = planet.x / game_map.width
             y_array[planet.id] = planet.y / game_map.height
         df.radius = radius_array
         df.spots = spots_array
         df.x = x_array
         df.y = y_array
+
+        ##I need to save the starting number of planets, since they might get destroyed
+        N_starting_planets = N_planets
 
 
     pct_owned.append(N_ships / (N_ships + N_enemy_ships) * 100)
@@ -187,14 +233,14 @@ while True:
     command_queue = []
 
     #Planet / turn specific factors
-    health_array = np.zeros(N_planets)
-    cur_prod_array = np.zeros(N_planets)
-    rem_prod_array = np.zeros(N_planets)
-    own_array = np.zeros(N_planets)
-    dock_array = np.zeros(N_planets)
-    my_ships_array = np.zeros(N_planets)
-    enemy_ships_array = np.zeros(N_planets)
-    full_array = np.zeros(N_planets)
+    health_array = np.zeros(N_starting_planets)
+    cur_prod_array = np.zeros(N_starting_planets)
+    rem_prod_array = np.zeros(N_starting_planets)
+    own_array = np.zeros(N_starting_planets)
+    dock_array = np.zeros(N_starting_planets)
+    my_ships_array = np.zeros(N_starting_planets)
+    enemy_ships_array = np.zeros(N_starting_planets)
+    full_array = np.zeros(N_starting_planets)
     for planet in game_map.all_planets():
         health_array[planet.id] = planet.health
         if planet.owner == game_map.get_me():
@@ -227,16 +273,24 @@ while True:
     df.current_production = cur_prod_array / MAX_PROD
     df.remaining_production = rem_prod_array / MAX_PROD
     df.ownership = own_array
-    df.n_docked_ships = dock_array / MAX_SPOTS
-    df.n_my_ships = my_ships_array / MAX_SPOTS
-    df.n_enemy_ships = enemy_ships_array / MAX_SPOTS
+    #These are N counts for the moment
+    df.pct_docked_ships = dock_array
+    df.pct_my_ships = my_ships_array
+    df.pct_enemy_ships = enemy_ships_array
     df.is_full = full_array
 
+    #Convert docking spots to percent and drop total
+    df.pct_docked_ships = df.pct_docked_ships / df.spots
+    df.pct_my_ships = df.pct_my_ships / df.spots
+    df.pct_enemy_ships = df.pct_enemy_ships / df.spots
+
+    ##Calculate points for training
     points = (N_ships - N_enemy_ships) * 100
     cur_ship_ids = []
     for s in game_map.get_me().all_ships():
         cur_ship_ids.append(s.id)
 
+    NEW_SHIP = 0
     if turn > 0:
         for s in ship_states[turn-1]:
             if s not in cur_ship_ids:
@@ -246,8 +300,10 @@ while True:
             if ship.id not in ship_states[turn-1]:
                 #if we gained a new ship from the last state
                 points += 100
+                NEW_SHIP = 1
 
     logging.info('Points: {}'.format(points))
+    logging.info('New Ship: {}'.format(NEW_SHIP))
 
     #Dict to hold ship states and actions
     ship_dict = {}
@@ -255,11 +311,11 @@ while True:
     for ship in game_map.get_me().all_ships():
 
         #Calculate matrix of values for every ship that are ship specific
-        dist_array = np.zeros(N_planets)
-        angle_array = np.zeros(N_planets)
-        my_dist_array = np.zeros(N_planets)
-        enemy_dist_array = np.zeros(N_planets)
-        obstacle_array = np.zeros(N_planets)
+        dist_array = np.zeros(N_starting_planets)
+        angle_array = np.zeros(N_starting_planets)
+        my_dist_array = np.zeros(N_starting_planets)
+        enemy_dist_array = np.zeros(N_starting_planets)
+        obstacle_array = np.zeros(N_starting_planets)
         for planet in game_map.all_planets():
             d = ship.calculate_distance_between(planet)
             dist_array[planet.id] = d
@@ -289,19 +345,33 @@ while True:
         df.obstacle_array = obstacle_array / 10
 
         #train_data = preprocessing.scale(df.drop('planet', axis=1))
-        train_data = df.drop('planet', axis=1)
+        train_data = df.drop(['planet', 'spots'], axis=1)
+
+        N_FEATURES = train_data.shape[1]
+        rows_to_add = PLANET_MAX_NUM-train_data.shape[0]
 
         #training dim is 1 x total features / state size
-        td = train_data.values.reshape((1, train_data.size))
+        td = np.vstack((train_data.values, np.zeros((rows_to_add, N_FEATURES))))
+        td = td.reshape((1, td.size))
         logging.info('Planet Matrix')
         logging.info(df)
-        #logging.info(df.shape)
+        logging.info(df.shape)
 
-        #logging.info(td.size)
+        logging.info(td.size)
+        logging.info(td.shape)
+
+        logging.info('Individual Ship Metrics')
+        #Game level metrics too
+        ship_metrics = [ship.x / game_map.width, ship.y / game_map.height, ship.health / MAX_HEALTH, pct_owned[turn]/100, N_planets/PLANET_MAX_NUM, N_planets/N_starting_planets]
+
+        logging.info(ship_metrics)
+        sm = np.array(ship_metrics).reshape(1, len(ship_metrics))
+
+        td = np.concatenate((td, sm), axis=1)
 
         ##Add in Friendly and Enemy ship matrix
         all_ships = game_map._all_ships()
-        df_ships = pd.DataFrame(np.zeros((len(all_ships), 6)), columns=['ship_id', 'x', 'y', 'player', 'distance', 'status'])
+        df_ships = pd.DataFrame(np.zeros((len(all_ships), 7)), columns=['ship_id', 'x', 'y', 'player', 'distance', 'angle', 'status'])
 
         ship_id_array = []
         ship_x_array = []
@@ -309,99 +379,101 @@ while True:
         ship_player_array = []
         ship_dist_array = []
         ship_status_array = []
-
-        ship_min_enemy = [(1000, -1)] * SHIPS
-        ship_min_friendly = [(1000, -1)] * SHIPS
+        ship_angle_array = []
 
         for s in all_ships:
             #ship_id_array = np.append(ship_id_array, s.id)
             ship_id_array.append(s.id)
             ship_x_array.append(s.x)
             ship_y_array.append(s.y)
-            ship_player_array.append(s.owner.id)
-            ship_status_array.append(s.docking_status)
 
+            if s.owner.id == game_map.get_me():
+                ownership = 1
+            else:  # owned by enemy
+                ownership = 0
+            ship_player_array.append(ownership)
+
+            ship_status_array.append(s.docking_status)
+            ship_angle_array.append(ship.calculate_angle_between(s))
             dist = ship.calculate_distance_between(s)
             ship_dist_array.append(dist)
-            running_max_e, _ = max(ship_min_enemy)
-            running_max_f, _ = max(ship_min_friendly)
-            if (s.owner.id != game_map.my_id) & (dist < running_max_e):
-                ship_min_enemy.pop()
-                ship_min_enemy.append((dist, s.id))
-                ship_min_enemy = sorted(ship_min_enemy)
-            if (s.owner.id == game_map.my_id) & (dist < running_max_f) & (ship.id != s.id):
-                ship_min_friendly.pop()
-                ship_min_friendly.append((dist, s.id))
-                ship_min_friendly = sorted(ship_min_friendly)
-
-        #logging.info(ship_min_enemy)
-        #logging.info(ship_min_friendly)
 
         df_ships.ship_id = ship_id_array
-        df_ships.x = ship_x_array
-        df_ships.y = ship_y_array
+        df_ships.x = np.array(ship_x_array) / game_map.width
+        df_ships.y = np.array(ship_y_array) / game_map.height
         df_ships.player = ship_player_array
-        df_ships.distance = ship_dist_array
+        df_ships.distance = np.array(ship_dist_array) / game_map.height
+        df_ships.angle = np.array(ship_angle_array) / 360
         df_ships.status = ship_status_array
 
-        ids_e = []
-        ids_f = []
-        for _, id, in ship_min_enemy:
-            ids_e.append(id)
-        for _, id, in ship_min_friendly:
-            ids_f.append(id)
-        #logging.info(all_ships)
-        #logging.info('SHIP')
-        #logging.info(df_ships)
-        #logging.info(df_ships[df_ships['ship_id'].isin(ids_e)])
+        df_ship_train = df_ships.sort_values('distance')
+        #split between friendly and enemy ships
+        df_ship_train = df_ship_train.drop(['ship_id', 'status'], axis=1)
+
+        df_ship_friendly = df_ship_train[(df_ship_train.player == 1)]
+        df_ship_enemy = df_ship_train[(df_ship_train.player == 0)]
+
+        ship_td_friendly = df_ship_friendly.values
+        ship_td_enemy = df_ship_enemy.values
+
+        N_SHIP_FEATURES = df_ship_train.shape[1]
+
+        rows_to_add = MAX_SHIPS - ship_td_friendly.shape[0]
+        if rows_to_add > 0:
+            ship_td_friendly = np.vstack((ship_td_friendly, np.zeros((rows_to_add, N_SHIP_FEATURES))))
+        else:
+            ship_td_friendly = ship_td_friendly[0:MAX_SHIPS, :]
+
+        rows_to_add = MAX_SHIPS - ship_td_enemy.shape[0]
+        if rows_to_add > 0:
+            ship_td_enemy = np.vstack((ship_td_enemy, np.zeros((rows_to_add, N_SHIP_FEATURES))))
+        else:
+            ship_td_enemy = ship_td_enemy[0:MAX_SHIPS, :]
+
+        ship_td_friendly = ship_td_friendly.reshape((1, ship_td_friendly.size))
+        ship_td_enemy = ship_td_enemy.reshape((1, ship_td_enemy.size))
+
+        td = np.concatenate((td, ship_td_friendly, ship_td_enemy), axis=1)
+        logging.info('Input Dim: {}'.format(td.shape))
 
         #output is sigmoid(0,1) length 3: percent of x, percent of y, percent of max velocity
-        if turn == 0:
-            MyAgent = Agent(td.size, 3)
+        if 'MyAgent' not in locals():
+            MyAgent = Agent(td.size, 3, sess)
 
         policy = MyAgent.get_action(td)
 
         ship_dict[ship.id] = (td, policy)
 
-        logging.info('POLICY')
-        logging.info(policy)
-
-        #logging.info('Points: {}'.format(points))
+        logging.info('Policy: {}'.format(policy))
+        logging.info('Points: {}'.format(points))
         #logging.info(ship_dict)
 
-        # If the ship is docked
+        # If the ship is docking, docked or undocking
         if ship.docking_status != ship.DockingStatus.UNDOCKED:
-            # Skip this ship
             continue
 
-        # For each planet in the game (only non-destroyed planets are included)
+        dock_command = None
         for planet in game_map.all_planets():
-            # If the planet is owned
-            if planet.is_owned():
-                # Skip this planet
+            if planet.is_full():
                 continue
-
+            elif (planet.owner == game_map.get_me()) & (ship.can_dock(planet)) & (NEW_SHIP == 0):
+                dock_command = ship.dock(planet)
+            elif (planet.owner is None) & (ship.can_dock(planet)) & (NEW_SHIP == 0):
+                dock_command = ship.dock(planet)
             # If we can dock, let's (try to) dock. If two ships try to dock at once, neither will be able to.
-            if ship.can_dock(planet):
-                # We add the command by appending it to the command_queue
-                command_queue.append(ship.dock(planet))
-            else:
-                # If we can't dock, we move towards the closest empty point near this planet (by using closest_point_to)
-                # with constant speed. Don't worry about pathfinding for now, as the command will do it for you.
-                # We run this navigate command each turn until we arrive to get the latest move.
-                # Here we move at half our maximum speed to better control the ships
-                # In order to execute faster we also choose to ignore ship collision calculations during navigation.
-                # This will mean that you have a higher probability of crashing into ships, but it also means you will
-                # make move decisions much quicker. As your skill progresses and your moves turn more optimal you may
-                # wish to turn that option off.
-                navigate_command = ship.navigate(ship.closest_point_to(planet), game_map, speed=hlt.constants.MAX_SPEED/2, ignore_ships=True)
-                # If the move is possible, add it to the command_queue (if there are too many obstacles on the way
-                # or we are trapped (or we reached our destination!), navigate_command will return null;
-                # don't fret though, we can run the command again the next turn)
-                if navigate_command:
-                    command_queue.append(navigate_command)
-            break
 
+        if dock_command is None:
+            speed = policy[0][2] * hlt.constants.MAX_SPEED
+            a = angle_between(ship.x, ship.y, policy[0][0] * game_map.width, policy[0][1] * game_map.height)
+            navigate_command = ship.thrust(speed, a)
+        else:
+            navigate_command = dock_command
+
+        if navigate_command:
+            command_queue.append(navigate_command)
+
+    logging.info('Turn: {}'.format(turn))
+    logging.info('Command: {}'.format(command_queue))
     #Train based on previous actions
     if turn > 0:
         prior_turn_dict = ship_states[turn-1]
@@ -412,7 +484,12 @@ while True:
                 cur_state, cur_action = ship_dict[k]
                 MyAgent.train_model(prior_state, cur_state, prior_action, points)
                 logging.info('Training worked')
-    
+
+    if turn % 50 == 0:
+        MyAgent.update_targets()
+        MyAgent.actor_target.save_weights("./model/actor.h5")
+        MyAgent.critic_target.save_weights("./model/critic.h5")
+
     turn += 1
     logging.info(turn)
 
@@ -429,3 +506,18 @@ while True:
 #+100 for new ship
 #-100 for dead ship
 #maybe +percent of board -50
+
+#Windows
+#python hlt_client\client.py gym -r "python MyBot.py" -r "python MyBot-Agent.py" -b "halite" -i 100 -H 160 -W 240
+#.\halite -d "240 160" -t "python MyBot.py" "python MyBot-Agent.py"
+#.\halite -d "240 160" -t "python MyBot-Agent2.py" "python MyBot.py"
+
+#.\halite -d "240 160" -t "python MyBot.py" "python MyBot-adam.py"
+#.\halite -d "240 160" -t "python MyBot-adadelta.py" "python MyBot.py"
+#python hlt_client\client.py gym -r "python MyBot.py" -r "python MyBot-adam.py" -b "halite" -i 1000 -H 160 -W 240
+#python hlt_client\client.py gym -r "python MyBot-adadelta.py" -r "python MyBot.py" -b "halite" -i 1000 -H 160 -W 240
+#python hlt_client\client.py gym -r "python MyBot-adadelta.py" -r "python MyBot-adam.py" -b "halite" -i 100 -H 160 -W 240
+
+#Mac
+#./halite -d "240 160" -t "python MyBot-Agent.py" "python MyBot.py"
+#./hlt_client/client.py gym -r "python MyBot-adadelta.py" -r "python MyBot-adam.py" -b "./halite" -i 100 -H 160 -W 240
