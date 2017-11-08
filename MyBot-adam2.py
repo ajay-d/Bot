@@ -47,8 +47,8 @@ class Agent:
 
         self.actor_grads = tf.gradients(self.actor.outputs, actor_weights, -self.actor_critic_grad)
         grads = zip(self.actor_grads, actor_weights)
-        #self.optimize = tf.train.AdamOptimizer().apply_gradients(grads)
-        self.optimize = tf.train.AdadeltaOptimizer().apply_gradients(grads)
+        self.optimize = tf.train.AdamOptimizer().apply_gradients(grads)
+        #self.optimize = tf.train.AdadeltaOptimizer().apply_gradients(grads)
 
         self.critic_grads = tf.gradients(self.critic.outputs, self.critic_action_input)
 
@@ -59,11 +59,7 @@ class Agent:
             self.critic.load_weights("./model_%d/critic.h5" % (game_map.my_id))
 
     def get_action(self, state):
-        if np.random.random() < self.epsilon:
-            policy = np.random.rand(1, self.action_size)
-        else:
-            #Use current actor
-            policy = self.actor.predict(state, batch_size=1)
+        policy = self.actor.predict(state, batch_size=1)
         return policy
 
     def get_eps(self):
@@ -81,7 +77,7 @@ class Agent:
         actor = Model(inputs=state_input, outputs=output)
         adam = Adam(lr=0.01)
         #'adam', 'adamax', 'adadelta', 'nadam'
-        actor.compile(loss="binary_crossentropy", optimizer='adadelta')
+        actor.compile(loss="binary_crossentropy", optimizer='adam')
 
         return state_input, actor
 
@@ -102,7 +98,7 @@ class Agent:
 
         critic = Model(inputs=[state_input, action_input], outputs=outputLayer)
         adam = Adam(lr=0.01)
-        critic.compile(loss='mse', optimizer='adadelta')
+        critic.compile(loss='mse', optimizer='adam')
 
         return state_input, action_input, critic
 
@@ -142,9 +138,9 @@ K.set_session(sess)
 
 # GAME START
 # Here we define the bot's name as Settler and initialize the game, including communication with the Halite engine.
-game = hlt.Game("Adadelta")
+game = hlt.Game("Adam")
 # Then we print our start message to the logs
-logging.info("Starting my Adadelta bot!")
+logging.info("Starting my Adam bot!")
 
 FEATURE_NAMES = [
     "health",
@@ -469,20 +465,6 @@ while True:
             MyAgent = Agent(td.size, 3, sess)
 
         policy = MyAgent.get_action(td)
-
-        #Need to save some deterministic policies
-        if np.random.random() < MyAgent.get_eps():
-            #nav = determine_commands[ship].split()
-            nav = determine_commands[ship]
-            logging.info(nav)
-            logging.info(policy)
-
-            policy[0][0] = nav.x / game_map.width
-            policy[0][1] = nav.y / game_map.height
-            d = distance(ship.x, ship.y, nav.x, nav.y)
-            policy[0][2] = hlt.constants.MAX_SPEED if (d >= hlt.constants.MAX_SPEED) else d
-            policy[0][2] = policy[0][2] / hlt.constants.MAX_SPEED
-            logging.info(policy)
 
         ship_dict[ship.id] = (td, policy, ship.docking_status)
 

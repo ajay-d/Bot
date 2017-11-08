@@ -59,11 +59,7 @@ class Agent:
             self.critic.load_weights("./model_%d/critic.h5" % (game_map.my_id))
 
     def get_action(self, state):
-        if np.random.random() < self.epsilon:
-            policy = np.random.rand(1, self.action_size)
-        else:
-            #Use current actor
-            policy = self.actor.predict(state, batch_size=1)
+        policy = self.actor.predict(state, batch_size=1)
         return policy
 
     def get_eps(self):
@@ -469,20 +465,6 @@ while True:
             MyAgent = Agent(td.size, 3, sess)
 
         policy = MyAgent.get_action(td)
-
-        #Need to save some deterministic policies
-        if np.random.random() < MyAgent.get_eps():
-            #nav = determine_commands[ship].split()
-            nav = determine_commands[ship]
-            logging.info(nav)
-            logging.info(policy)
-
-            policy[0][0] = nav.x / game_map.width
-            policy[0][1] = nav.y / game_map.height
-            d = distance(ship.x, ship.y, nav.x, nav.y)
-            policy[0][2] = hlt.constants.MAX_SPEED if (d >= hlt.constants.MAX_SPEED) else d
-            policy[0][2] = policy[0][2] / hlt.constants.MAX_SPEED
-            logging.info(policy)
 
         ship_dict[ship.id] = (td, policy, ship.docking_status)
 

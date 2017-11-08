@@ -3,7 +3,7 @@ Welcome to your first Halite-II bot!
 """
 import os
 os.environ["KERAS_BACKEND"] = "tensorflow"
-import keras
+
 from keras.optimizers import Adam
 from keras.models import Sequential, Model
 from keras.layers import Dense, Input, Activation
@@ -13,22 +13,18 @@ from keras.layers.merge import Add
 import hlt
 # Then let's import the logging module so we can print out information
 import logging
-import pandas as pd
-import numpy as np
 import math
-
 import keras.backend as K
 import tensorflow as tf
+import pandas as pd
+import numpy as np
 
 from sklearn import preprocessing
 from collections import deque
 
-sess = tf.Session()
-K.set_session(sess)
-
 class Agent:
     def __init__(self, state_size, action_size, sess):
-        self.load_model = True
+        self.load_model = False
 
         # get size of state and action
         self.state_size = state_size
@@ -63,19 +59,24 @@ class Agent:
             self.critic.load_weights("./model_%d/critic.h5" % (game_map.my_id))
 
     def get_action(self, state):
-        if self.epsilon > self.epsilon_min:
-            self.epsilon *= self.epsilon_decay
         if np.random.random() < self.epsilon:
             policy = np.random.rand(1, self.action_size)
         else:
-            policy = self.actor_target.predict(state, batch_size=1)
+            #Use current actor
+            policy = self.actor.predict(state, batch_size=1)
         return policy
+
+    def get_eps(self):
+        if self.epsilon > self.epsilon_min:
+            self.epsilon *= self.epsilon_decay
+        return self.epsilon
 
     def build_actor(self):
         state_input = Input(shape=(self.state_size,))
-        h1 = Dense(250, activation='relu', kernel_initializer='he_uniform')(state_input)
+        h1 = Dense(500, activation='relu', kernel_initializer='he_uniform')(state_input)
         h2 = Dense(250, activation='relu', kernel_initializer='he_uniform')(h1)
-        output = Dense(self.action_size, activation='sigmoid', kernel_initializer='he_uniform')(h2)
+        h3 = Dense(100, activation='relu', kernel_initializer='he_uniform')(h2)
+        output = Dense(self.action_size, activation='sigmoid', kernel_initializer='he_uniform')(h3)
 
         actor = Model(inputs=state_input, outputs=output)
         adam = Adam(lr=0.01)
@@ -87,16 +88,17 @@ class Agent:
     def build_critic(self):
 
         state_input = Input(shape=(self.state_size,))
-        state_h1 = Dense(200, activation='relu', kernel_initializer='he_uniform')(state_input)
+        state_h1 = Dense(500, activation='relu', kernel_initializer='he_uniform')(state_input)
         state_h2 = Dense(250, activation='relu', kernel_initializer='he_uniform')(state_h1)
 
         action_input = Input(shape=(self.action_size,))
-        action_h1 = Dense(50, activation='relu', kernel_initializer='he_uniform')(action_input)
+        action_h1 = Dense(500, activation='relu', kernel_initializer='he_uniform')(action_input)
         action_h2 = Dense(250, activation='relu', kernel_initializer='he_uniform')(action_h1)
 
         mergedLayer = Add()([state_h2, action_h2])
-        mergedLayer_h1 = Dense(100, activation='relu', kernel_initializer='he_uniform')(mergedLayer)
-        outputLayer = Dense(1, activation='relu')(mergedLayer_h1)
+        mergedLayer_h1 = Dense(500, activation='relu', kernel_initializer='he_uniform')(mergedLayer)
+        mergedLayer_h2 = Dense(250, activation='relu', kernel_initializer='he_uniform')(mergedLayer_h1)
+        outputLayer = Dense(1, activation='relu')(mergedLayer_h2)
 
         critic = Model(inputs=[state_input, action_input], outputs=outputLayer)
         adam = Adam(lr=0.01)
@@ -114,6 +116,10 @@ class Agent:
 
         self.critic.fit([prior_state, action], target, batch_size=1, epochs=1, verbose=0)
 
+        #Train actor model
+        predicted_action = self.actor.predict(prior_state)
+
+        #Use action or predicted action?
         grads = self.sess.run(self.critic_grads,
                               feed_dict={
                                   self.critic_state_input:  prior_state,
@@ -131,6 +137,8 @@ class Agent:
         self.actor_target.set_weights(actor_weights)
         self.critic_target.set_weights(critic_weights)
 
+sess = tf.Session()
+K.set_session(sess)
 
 # GAME START
 # Here we define the bot's name as Settler and initialize the game, including communication with the Halite engine.
@@ -156,9 +164,6 @@ def distance2(x1, y1, x2, y2):
 
 def distance(x1, y1, x2, y2):
     return math.sqrt(distance2(x1, y1, x2, y2))
-
-def hyp(x1, x2):
-    return math.sqrt(x1**2 + x2**2)
 
 def angle_between(x1, y1, x2, y2):
     return math.degrees(math.atan2(y2 - y1, x2 - x1)) % 360
@@ -304,6 +309,31 @@ while True:
 
     logging.info('Points: {}'.format(points))
 
+    #Create simple deterministic rules
+    #Just for debugging and deterministic actions
+    df_determine = pd.DataFrame(np.zeros((N_planets, 3)), columns=['planet', 'remaining_production', 'ownership'])
+    for p in game_map.all_planets():
+        df_determine.planet = p
+        df_determine.remaining_production = p.remaining_resources
+        if p.owner == game_map.get_me():
+            df_determine.ownership = 1
+        elif p.owner is None:
+            df_determine.ownership = 0
+
+    logging.info('Planet Matrix True')
+    df_determine = df_determine[(df_determine.ownership >=  0)].sort_values('remaining_production', ascending=False)
+    #logging.info(df_determine)
+    determine_planets = np.array(df_determine.planet)
+    determine_commands = {}
+    n = 0
+    for ship in game_map.get_me().all_ships():
+        cur_p = determine_planets[n % len(determine_planets)]
+        #determine_commands[ship] = ship.navigate(ship.closest_point_to(cur_p), game_map, speed=hlt.constants.MAX_SPEED/2)
+        determine_commands[ship] = ship.closest_point_to(cur_p)
+        n += 1
+    
+    logging.info(determine_commands)
+
     #Dict to hold ship states and actions
     ship_dict = {}
     # For every ship that I control
@@ -335,7 +365,6 @@ while True:
             my_dist_array[planet.id] = my_best_distance
             enemy_dist_array[planet.id] = enemy_best_distance
             obstacle_array[planet.id] = len(game_map.obstacles_between(ship, planet))
-
 
         df.distance = dist_array / game_map.height
         df.angle = angle_array / 360
@@ -441,7 +470,21 @@ while True:
 
         policy = MyAgent.get_action(td)
 
-        ship_dict[ship.id] = (td, policy)
+        #Need to save some deterministic policies
+        if np.random.random() < MyAgent.get_eps():
+            #nav = determine_commands[ship].split()
+            nav = determine_commands[ship]
+            logging.info(nav)
+            logging.info(policy)
+
+            policy[0][0] = nav.x / game_map.width
+            policy[0][1] = nav.y / game_map.height
+            d = distance(ship.x, ship.y, nav.x, nav.y)
+            policy[0][2] = hlt.constants.MAX_SPEED if (d >= hlt.constants.MAX_SPEED) else d
+            policy[0][2] = policy[0][2] / hlt.constants.MAX_SPEED
+            logging.info(policy)
+
+        ship_dict[ship.id] = (td, policy, ship.docking_status)
 
         logging.info('Policy: {}'.format(policy))
         logging.info('Points: {}'.format(points))
@@ -449,23 +492,40 @@ while True:
 
         #check to see if this is a new ship
         NEW_SHIP = 0
+        #Keep old docking status for ships
+        PRIOR_DOCK_STATUS = None
         if turn > 0 :
             if ship.id not in ship_states[turn-1]:
                 NEW_SHIP = 1
+            if ship.id in ship_states[turn-1]:
+                _, _, PRIOR_DOCK_STATUS = ship_states[turn-1][ship.id]
 
         logging.info('New Ship: {}'.format(NEW_SHIP))
+        
+        logging.info('Docking Status: {}'.format(ship.docking_status))
+        logging.info('Prior Docking Status: {}'.format(PRIOR_DOCK_STATUS))
 
-        # If the ship is docking, docked or undocking
-        if ship.docking_status != ship.DockingStatus.UNDOCKED:
+        # If the ship is docking or undocking
+        if ship.docking_status in [ship.DockingStatus.DOCKING, ship.DockingStatus.UNDOCKING]:
             continue
 
+        #If planet health is low, or production is low, undock
+        #If we were unlocking last round and are now undocked, move away
         dock_command = None
+        if ship.docking_status == ship.DockingStatus.DOCKED:
+            p = ship.planet
+            p_health = p.health
+            s_health = ship.health
+            p_remaining = p.remaining_resources
+            if (p_health < 1000) |  (s_health / hlt.constants.MAX_SHIP_HEALTH < .5):
+                dock_command = ship.undock()
+        
         for planet in game_map.all_planets():
             if planet.is_full():
                 continue
-            elif (planet.owner == game_map.get_me()) & (ship.can_dock(planet)) & (NEW_SHIP == 0):
+            elif (planet.owner == game_map.get_me()) & (ship.can_dock(planet)) & (NEW_SHIP == 0) & (PRIOR_DOCK_STATUS == ship.DockingStatus.UNDOCKED):
                 dock_command = ship.dock(planet)
-            elif (planet.owner is None) & (ship.can_dock(planet)) & (NEW_SHIP == 0):
+            elif (planet.owner is None) & (ship.can_dock(planet)) & (NEW_SHIP == 0) & (PRIOR_DOCK_STATUS == ship.DockingStatus.UNDOCKED):
                 dock_command = ship.dock(planet)
             # If we can dock, let's (try to) dock. If two ships try to dock at once, neither will be able to.
 
@@ -485,14 +545,14 @@ while True:
     if turn > 0:
         prior_turn_dict = ship_states[turn-1]
         for k in prior_turn_dict:
-            prior_state, prior_action = prior_turn_dict[k]
+            prior_state, prior_action, _ = prior_turn_dict[k]
             #ship had to be in the last turn and current turn to train
             if k in ship_dict:
-                cur_state, cur_action = ship_dict[k]
+                cur_state, cur_action, _ = ship_dict[k]
                 MyAgent.train_model(prior_state, cur_state, prior_action, points)
                 logging.info('Training worked')
 
-    if turn % 50 == 0:
+    if turn % 10 == 0:
         MyAgent.update_targets()
         MyAgent.actor_target.save_weights("./model_%d/actor.h5" % (game_map.my_id))
         MyAgent.critic_target.save_weights("./model_%d/critic.h5" % (game_map.my_id))
@@ -527,3 +587,7 @@ while True:
 #Mac
 #./halite -d "240 160" -t "python MyBot-Agent.py" "python MyBot.py"
 #./hlt_client/client.py gym -r "python MyBot-adadelta.py" -r "python MyBot-adam.py" -b "./halite" -i 100 -H 160 -W 240
+
+#Training 
+#1000 adam vs adadelta epsilon_decay=.96, epsilon_min-.01, random move .05
+#1000 adam vs adadelta epsilon_decay=.9, epsilon_min=.10, random move never
